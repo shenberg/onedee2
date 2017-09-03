@@ -168,7 +168,7 @@ void win() {
 
 void loop() {
   // read the state of the pushbutton value:
-  int buttonState = digitalRead(BUTTON_PIN);
+  /*int buttonState = digitalRead(BUTTON_PIN);
   fill_leds_with_tempo();
   if (collision(position)) {
     lose();
@@ -185,7 +185,18 @@ void loop() {
   // if it is, the buttonState is HIGH:
   if (was_button_pressed(buttonState)) {
     button_pressed();
+  }*/
+
+  long now = millis();
+  if (remote_drum(now)) {
+    add_remote_drum(now);
   }
+  if (local_drum(now)) {
+    add_local_drum(now);
+  }
+
+  update_world(now);
+  draw_world();
   
   FastLED.show();
   delay(1000 / FRAMES_PER_SECOND);
@@ -194,7 +205,7 @@ void loop() {
 void setup() {
   // initialize the pushbutton pin as an input:
   pinMode(BUTTON_PIN, INPUT);
-  Serial.begin(9600);
+  Serial.begin(115200);
   Serial.println("begin");
 
     // tell FastLED about the LED strip configuration
