@@ -5,7 +5,7 @@ FASTLED_USING_NAMESPACE
 #define DATA_PIN    6
 #define LED_TYPE    WS2811
 #define COLOR_ORDER GRB
-#define NUM_LEDS    64
+#define NUM_LEDS    300
 
 CRGBArray<NUM_LEDS> leds;
 
@@ -17,109 +17,49 @@ constexpr int length(const T (&arr)[N]) {
   return N;
 }
 
-constexpr int DOWNGRADE_THRESHOLD = 2;
+constexpr int LOCAL_BEAT_DELAY = 10; // milliseconds
 
-constexpr int BUTTON_PIN = 2;     // the number of the pushbutton pin
+// from onedee_slave
+constexpr int LED_PIN = 3;      // led connected to digital pin 6 (pwm)
+constexpr int KNOCK_SENSOR_PIN = A0; // the piezo is connected to analog pin 0
+constexpr int POT_PIN = A3; //pin A0 to read analog input
+constexpr int COMMUNICATION_PIN = 9; // read remote drum beat
+constexpr int REMOTE_BEAT_DELAY = 15; // milliseconds
 
-constexpr int DEBOUNCE_TIME = 20; // milliseconds - time given for button-press to complete
 
-long debounceEnd = 0;
-enum {
-    WAITING_FOR_PRESS,
-    DEBOUNCE,
-    WAITING_FOR_LEAVE
-} logicState;
+bool isKnock() {
+  // ronen suggested analog noise workaround
+  /*
+  analogRead(POT_PIN);
+  delay(1);
+  */
+  int potValue = analogRead(POT_PIN);          //Read and save analog potValue from potentiometer
+  int threshold = potValue; // initial threshold value to decide when the detected sound is a knock or not
 
-bool was_button_pressed(int currentState) {
+  int ledPotValue = map(potValue, 0, 1023, 0, 255); //Map potValue 0-1023 to 0-255 (PWM) = ledPotValue
+  analogWrite(LED_PIN, ledPotValue);          //Send PWM ledPotValue to led
 
-  switch(logicState) {
-    case WAITING_FOR_PRESS:
-      if (currentState) {
-        logicState = DEBOUNCE;
-        debounceEnd = millis() + DEBOUNCE_TIME;
-      }
-      break;
-    case DEBOUNCE:
-      if (millis() >= debounceEnd) {
-        if (currentState) {
-          logicState = WAITING_FOR_LEAVE;
-          return true;
-        } else {
-          logicState = WAITING_FOR_PRESS;
-        }
-      }
-      break;
-    case WAITING_FOR_LEAVE:
-      if (!currentState) {
-        logicState = WAITING_FOR_PRESS;
-      }
-      break;
+  Serial.print(potValue);
+  Serial.print(' ');
+  // read the sensor and store it in the variable sensorReading:
+  // ronen suggested analog noise workaround
+  /*
+  analogRead(KNOCK_SENSOR_PIN);
+  delay(1);
+  */
+  int sensorReading = analogRead(KNOCK_SENSOR_PIN);  
+  Serial.println(sensorReading);
+
+  if (sensorReading >= threshold) {
+    Serial.print("Knock!");
+    Serial.println(threshold);
+    // TODO: some form of cooldown to debounce
+    return true;    
   }
   return false;
 }
 
-//const CRGB EMPTY_SPOT = CRGB(0,64,255);
-const CRGB EMPTY_SPOT = CRGB(0,0,0);
-const CRGB FILLED_SPOT = CRGB(255,64,0);
-
-
-long startTime = 0; // bpm relative to here
-int level = 0;
-int position = 0;
-int lossCount = 0;
-
-void reset_game() {
-  startTime = millis();
-  logicState = WAITING_FOR_PRESS;
-  position = 0;
-}
-
-constexpr bool tempo[] = {false, false, false, true, false, true};
-//constexpr bool tempo2[4] = {false, false, true, true};
-//constexpr bool tempos[][] = {tempo1, tempo2, tempo1, tempo1, tempo2};
-constexpr int bpm = 120;
-
-void fill_leds_with_tempo() {
-  long time = (millis() - startTime);
-  int beat = ((bpm * time) / 60000) % length(tempo);
-  leds[NUM_LEDS - 1] = leds[0] = EMPTY_SPOT;
-  for (int i = 1; i < NUM_LEDS - 1; i++) {
-    if (tempo[beat]) {
-      leds[i] = FILLED_SPOT;
-    } else {
-      leds[i] = EMPTY_SPOT;
-    }
-    beat = (beat + 1) % length(tempo);
-  }
-}
-
-void button_pressed() {
-  int nextPos;
-  for (nextPos = (position + 1) % NUM_LEDS; 
-       leds[nextPos] != EMPTY_SPOT;
-       nextPos = (nextPos + 1) % NUM_LEDS) {
-  }
-  position = nextPos;
-}
-
-void next_level() {
-  level++; // TODO: actual logic
-}
-
-void lower_level() {
-  if (level > 0) {
-    level--;
-  }
-}
-
-boolean collision(int position) {
-  return leds[position] != EMPTY_SPOT;
-}
-
-boolean won(int position) {
-  return position == NUM_LEDS - 1;
-}
-
+/*
 void draw_player(int position) {
   leds[position] = CRGB::Green;
 }
@@ -135,6 +75,7 @@ void lose_animation() {
   }
 }
 
+
 void win_animation() {
   for(int i = NUM_LEDS - 1; i > 0; i--) {
     leds(i, NUM_LEDS - 1).fadeToBlackBy(73);
@@ -148,63 +89,89 @@ void win_animation() {
     delay(10);
   }
 }
+*/
 
-void lose() {
-  lose_animation();
-  lossCount += 1;
-  if (lossCount >= DOWNGRADE_THRESHOLD) {
-    lower_level();
-    lossCount = 0;
+bool remoteDrumBeat(long now) {
+  static long lastRemoteBeatTime = 0;
+
+  // only allow one beat per REMOTE_BEAT_DELAY milliseconds from remote side
+  if (now - lastRemoteBeatTime < REMOTE_BEAT_DELAY) {
+    return false;
   }
-  reset_game();  
+
+  // if pin is set to high then remote side has recently detected a beat
+  if (digitalRead(COMMUNICATION_PIN) == HIGH) {
+    // yay, beat detected, update last detected beat time
+    lastRemoteBeatTime = now;
+    return true;
+  }
+
+  return false;
 }
 
-void win() {
-  win_animation();
-  next_level();
-  lossCount = 0;
-  reset_game();  
+void addRemoteBeat(long now) {
+  // TODO different effects
+  Serial.println("REMOTE beat detected");
 }
 
+bool localDrumBeat(long now) {
+  static long lastLocalBeatTime = 0;
+
+  // only allow one beat per LOCAL_BEAT_DELAY milliseconds from remote side
+  if (now - lastLocalBeatTime < LOCAL_BEAT_DELAY) {
+    return false;
+  }
+
+  if (isKnock()) {
+    lastLocalBeatTime = now;
+    return true;
+  }
+
+  return false;
+}
+
+void addLocalBeat(long now) {
+  // TODO different effects
+  Serial.println("LOCAL beat detected");  
+}
+
+void updateWorld(long now, int dt) {
+  //TODO
+}
+
+void drawWorld() {
+  //TODO
+}
+
+long lastTime = 0;
 void loop() {
-  // read the state of the pushbutton value:
-  /*int buttonState = digitalRead(BUTTON_PIN);
-  fill_leds_with_tempo();
-  if (collision(position)) {
-    lose();
-    return;
-  }
-  // NOTE: order matters since we compare to the leds array for collision detection :(
-  draw_player(position);
-
-  if (won(position)) {
-    win();
-    return;
-  }
-  // check if the pushbutton is pressed.
-  // if it is, the buttonState is HIGH:
-  if (was_button_pressed(buttonState)) {
-    button_pressed();
-  }*/
 
   long now = millis();
-  if (remote_drum(now)) {
-    add_remote_drum(now);
-  }
-  if (local_drum(now)) {
-    add_local_drum(now);
+  int dt = now - lastTime;
+
+  if (remoteDrumBeat(now)) {
+    addRemoteBeat(now);
   }
 
-  update_world(now);
-  draw_world();
+  if (localDrumBeat(now)) {
+    addLocalBeat(now);
+  }
+
+  updateWorld(now, dt);
+  drawWorld();
   
   FastLED.show();
   delay(1000 / FRAMES_PER_SECOND);
 }
 
 void setup() {
+  // from onedee_slave
+  pinMode(POT_PIN, INPUT); //Optional 
+  pinMode(LED_PIN, OUTPUT); // declare the LED_PIN as as OUTPUT
+  pinMode(COMMUNICATION_PIN, OUTPUT);
+
+
   // initialize the pushbutton pin as an input:
-  pinMode(BUTTON_PIN, INPUT);
   Serial.begin(115200);
   Serial.println("begin");
 
@@ -213,6 +180,7 @@ void setup() {
 
   // set master brightness control
   FastLED.setBrightness(BRIGHTNESS);
-  win_animation();
-  reset_game();
+
+  // last update time
+  lastTime = millis();
 }
