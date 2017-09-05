@@ -19,7 +19,7 @@ constexpr int length(const T (&arr)[N]) {
 
 constexpr int TIME_BETWEEN_FRAMES = 1000 / FRAMES_PER_SECOND; // in milliseconds
 
-constexpr int LOCAL_BEAT_DELAY = 15; // milliseconds
+constexpr int LOCAL_BEAT_DELAY = 50; // milliseconds
 constexpr int NUM_SIMULTANEOUS_BEATS = 10;
 constexpr int BEAT_TRAVEL_TIME = 3000; // in milliseconds
 
