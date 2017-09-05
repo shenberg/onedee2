@@ -2,22 +2,36 @@
 
 FASTLED_USING_NAMESPACE
 
-#define DATA_PIN    6
+#define DATA_PIN    5
 #define LED_TYPE    WS2811
 #define COLOR_ORDER GRB
 #define NUM_LEDS    300
 
 CRGBArray<NUM_LEDS> leds;
 
-#define BRIGHTNESS          96
-#define FRAMES_PER_SECOND  120
+#define BRIGHTNESS          28
+#define FRAMES_PER_SECOND  30
 
 template<class T, size_t N>
 constexpr int length(const T (&arr)[N]) {
   return N;
 }
 
-constexpr int LOCAL_BEAT_DELAY = 10; // milliseconds
+constexpr int TIME_BETWEEN_FRAMES = 1000 / FRAMES_PER_SECOND; // in milliseconds
+
+constexpr int LOCAL_BEAT_DELAY = 15; // milliseconds
+constexpr int NUM_SIMULTANEOUS_BEATS = 10;
+constexpr int BEAT_TRAVEL_TIME = 3000; // in milliseconds
+
+const CRGB LOCAL_BEAT_COLOR = CRGB(255, 0, 0);
+const CRGB REMOTE_BEAT_COLOR = CRGB(0, 255, 0);
+
+// TODO: hack
+long remoteBeatTimes[NUM_SIMULTANEOUS_BEATS] = {-10000};
+long localBeatTimes[NUM_SIMULTANEOUS_BEATS] = {-10000};
+int localCurrentBeat = 0;
+int remoteCurrentBeat = 0;
+
 
 // from onedee_slave
 constexpr int LED_PIN = 3;      // led connected to digital pin 6 (pwm)
@@ -28,6 +42,8 @@ constexpr int REMOTE_BEAT_DELAY = 15; // milliseconds
 
 
 bool isKnock() {
+  // simple hysteresis - don't tap again until we see a release sample
+  static bool wasKnocked = false;
   // ronen suggested analog noise workaround
   /*
   analogRead(POT_PIN);
@@ -51,48 +67,24 @@ bool isKnock() {
   Serial.println(sensorReading);
 
   if (sensorReading >= threshold) {
-    Serial.print("Knock!");
-    Serial.println(threshold);
-    // TODO: some form of cooldown to debounce
-    return true;    
+    if (!wasKnocked) {
+      Serial.print("Knock!");
+      Serial.println(threshold);
+      // TODO: some form of cooldown to debounce
+      wasKnocked = true;
+      return true;
+    }
+
+  } else if (wasKnocked) {
+    Serial.println("Unknocked");
+    wasKnocked = false;
   }
   return false;
 }
 
-/*
-void draw_player(int position) {
-  leds[position] = CRGB::Green;
-}
-
-void lose_animation() {
-  for (int i = 0; i < 3; i++) {
-    leds[position] = CRGB::Yellow;
-    FastLED.show();
-    delay(100);
-    leds[position] = CRGB::Black;
-    FastLED.show();
-    delay(100);    
-  }
-}
-
-
-void win_animation() {
-  for(int i = NUM_LEDS - 1; i > 0; i--) {
-    leds(i, NUM_LEDS - 1).fadeToBlackBy(73);
-    leds[i] = CRGB::Green;
-    FastLED.show();
-    delay(10);
-  }
-  for(int i = 0; i < 100; i++) {
-    leds.fadeToBlackBy(50);
-    FastLED.show();
-    delay(10);
-  }
-}
-*/
-
 bool remoteDrumBeat(long now) {
   static long lastRemoteBeatTime = 0;
+  static bool isBeating = false;
 
   // only allow one beat per REMOTE_BEAT_DELAY milliseconds from remote side
   if (now - lastRemoteBeatTime < REMOTE_BEAT_DELAY) {
@@ -101,9 +93,16 @@ bool remoteDrumBeat(long now) {
 
   // if pin is set to high then remote side has recently detected a beat
   if (digitalRead(COMMUNICATION_PIN) == HIGH) {
-    // yay, beat detected, update last detected beat time
-    lastRemoteBeatTime = now;
-    return true;
+    if (!isBeating) {
+      // yay, beat detected, update last detected beat time
+      lastRemoteBeatTime = now;
+      return true;
+    }
+  } else {
+    if (isBeating) {
+      Serial.println("unbeat");
+      isBeating = false;
+    }
   }
 
   return false;
@@ -112,6 +111,11 @@ bool remoteDrumBeat(long now) {
 void addRemoteBeat(long now) {
   // TODO different effects
   Serial.println("REMOTE beat detected");
+  remoteBeatTimes[remoteCurrentBeat] = now;
+  ++remoteCurrentBeat;
+  if (remoteCurrentBeat >= NUM_SIMULTANEOUS_BEATS) {
+    remoteCurrentBeat = 0;
+  }
 }
 
 bool localDrumBeat(long now) {
@@ -132,18 +136,59 @@ bool localDrumBeat(long now) {
 
 void addLocalBeat(long now) {
   // TODO different effects
-  Serial.println("LOCAL beat detected");  
+  Serial.println("LOCAL beat detected");
+  localBeatTimes[localCurrentBeat] = now;
+  ++localCurrentBeat;
+  if (localCurrentBeat >= NUM_SIMULTANEOUS_BEATS) {
+    localCurrentBeat = 0;
+  }
 }
 
 void updateWorld(long now, int dt) {
   //TODO
 }
 
-void drawWorld() {
-  //TODO
+void drawLocalBeat(long beatTime, long now, CRGB color) {
+  long timeFromStart = now - beatTime;
+  if (timeFromStart >= BEAT_TRAVEL_TIME) {
+    return;
+  }
+
+  int position = timeFromStart * NUM_LEDS / BEAT_TRAVEL_TIME;
+  if (position >= NUM_LEDS) {
+    Serial.println("EEEEEEK");
+    return;
+  }
+
+  leds[position] += color;
+}
+
+void drawRemoteBeat(long beatTime, long now, CRGB color) {
+  long timeFromStart = now - beatTime;
+  if (timeFromStart >= BEAT_TRAVEL_TIME) {
+    return;
+  }
+
+  int position = timeFromStart * NUM_LEDS / BEAT_TRAVEL_TIME;
+  if (position >= NUM_LEDS) {
+    Serial.println("AAAAAAK2");
+    return;
+  }
+
+  leds[(NUM_LEDS - 1) - position] += color;
+}
+
+void drawWorld(long now) {
+  leds.fadeToBlackBy(30);
+  for(int i = 0; i < NUM_SIMULTANEOUS_BEATS; i++) {
+    drawLocalBeat(localBeatTimes[i], now, LOCAL_BEAT_COLOR);
+    drawRemoteBeat(remoteBeatTimes[i], now, REMOTE_BEAT_COLOR);
+  }
 }
 
 long lastTime = 0;
+long lastDrawTime = 0;
+
 void loop() {
 
   long now = millis();
@@ -158,10 +203,13 @@ void loop() {
   }
 
   updateWorld(now, dt);
-  drawWorld();
-  
-  FastLED.show();
-  delay(1000 / FRAMES_PER_SECOND);
+
+  if (now - lastDrawTime > TIME_BETWEEN_FRAMES) {
+    drawWorld(now);
+    lastDrawTime = now;
+    
+    FastLED.show();
+  }
 }
 
 void setup() {
@@ -183,4 +231,7 @@ void setup() {
 
   // last update time
   lastTime = millis();
+
+  // 5 second startup delay in case we screw up delays in the code
+  delay(5000);
 }
