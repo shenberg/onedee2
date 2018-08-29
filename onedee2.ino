@@ -21,10 +21,32 @@ constexpr int TIME_BETWEEN_FRAMES = 1000 / FRAMES_PER_SECOND; // in milliseconds
 
 constexpr int LOCAL_BEAT_DELAY = 50; // milliseconds
 constexpr int NUM_SIMULTANEOUS_BEATS = 10;
-constexpr int BEAT_TRAVEL_TIME = 3000; // in milliseconds
+constexpr int BEAT_TRAVEL_TIME = 1000; // in milliseconds
+constexpr int FADE_AMOUNT = 70; // FADE_AMOUNT/255.0
 
-const CRGB LOCAL_BEAT_COLOR = CRGB(255, 0, 0);
+constexpr int SEGMENT1_END = 79; // last pixel in segment 1
+constexpr int SEGMENT2_START = 80; // first pixel of segment 2
+constexpr int SEGMENT3_START = 208; // first pixel in segment 3
+
+constexpr int RANGE = 256;
+
+constexpr int NUM_REGULAR_LEDS = (SEGMENT1_END + 1) + (NUM_LEDS - SEGMENT3_START);
+
+const CRGB LOCAL_BEAT_COLOR = CRGB(0, 0, 255);
 const CRGB REMOTE_BEAT_COLOR = CRGB(0, 255, 0);
+
+long lastTime = 0;
+long lastDrawTime = 0;
+long now = 0;
+
+long getNow() {
+  return now;
+}
+
+long updateNow() {
+  now = millis();
+}
+
 
 // TODO: hack
 long remoteBeatTimes[NUM_SIMULTANEOUS_BEATS] = {-10000};
@@ -82,10 +104,11 @@ bool isKnock() {
   return false;
 }
 
-bool remoteDrumBeat(long now) {
+bool remoteDrumBeat() {
   static long lastRemoteBeatTime = 0;
   static bool isBeating = false;
 
+  long now = getNow();
   // only allow one beat per REMOTE_BEAT_DELAY milliseconds from remote side
   if (now - lastRemoteBeatTime < REMOTE_BEAT_DELAY) {
     return false;
@@ -108,18 +131,19 @@ bool remoteDrumBeat(long now) {
   return false;
 }
 
-void addRemoteBeat(long now) {
+void addRemoteBeat() {
   // TODO different effects
   Serial.println("REMOTE beat detected");
-  remoteBeatTimes[remoteCurrentBeat] = now;
+  remoteBeatTimes[remoteCurrentBeat] = getNow();
   ++remoteCurrentBeat;
   if (remoteCurrentBeat >= NUM_SIMULTANEOUS_BEATS) {
     remoteCurrentBeat = 0;
   }
 }
 
-bool localDrumBeat(long now) {
+bool localDrumBeat() {
   static long lastLocalBeatTime = 0;
+  long now = getNow();
 
   // only allow one beat per LOCAL_BEAT_DELAY milliseconds from remote side
   if (now - lastLocalBeatTime < LOCAL_BEAT_DELAY) {
@@ -134,37 +158,112 @@ bool localDrumBeat(long now) {
   return false;
 }
 
-void addLocalBeat(long now) {
+void addLocalBeat() {
   // TODO different effects
   Serial.println("LOCAL beat detected");
-  localBeatTimes[localCurrentBeat] = now;
+  localBeatTimes[localCurrentBeat] = getNow();
   ++localCurrentBeat;
   if (localCurrentBeat >= NUM_SIMULTANEOUS_BEATS) {
     localCurrentBeat = 0;
   }
 }
 
-void updateWorld(long now, int dt) {
+void updateWorld() {
   //TODO
 }
 
-void drawLocalBeat(long beatTime, long now, CRGB color) {
-  long timeFromStart = now - beatTime;
+
+unsigned int positionFromTime(long timeFromStart) {
   if (timeFromStart >= BEAT_TRAVEL_TIME) {
-    return;
+    return RANGE; // marks invalid value
   }
 
-  int position = timeFromStart * NUM_LEDS / BEAT_TRAVEL_TIME;
-  if (position >= NUM_LEDS) {
-    Serial.println("EEEEEEK");
-    return;
-  }
-
-  leds[position] += color;
+  return timeFromStart * RANGE / BEAT_TRAVEL_TIME;
 }
 
-void drawRemoteBeat(long beatTime, long now, CRGB color) {
-  long timeFromStart = now - beatTime;
+void addLine(int start, int end, const CRGB &color) {
+  for (CRGB& pixel : leds(start, end)) {
+    pixel += color;
+  }  
+}
+
+void drawLocalBeat(long beatTime, long dt, CRGB color) {
+  long timeFromStart = getNow() - beatTime;
+
+  int position = positionFromTime(timeFromStart);
+  if (position >= RANGE) {
+    return;
+  }
+
+  if (position < (RANGE / 2)) {
+    position = map(position, 0, RANGE/2, 0, SEGMENT1_END + 1);
+    int startPosition = map(positionFromTime(timeFromStart - dt),  0, RANGE/2, 0, SEGMENT1_END + 1);
+    if (startPosition < 0) {
+      startPosition = 0;
+    }
+
+    addLine(startPosition, position, color);
+  } else {
+    int startPosition = positionFromTime(timeFromStart - dt);
+    if (startPosition < (RANGE / 2)) {
+      // line straddles center, pre-center segment first
+      startPosition = map(startPosition,  0, RANGE/2, 0, SEGMENT1_END + 1);
+      addLine(startPosition, SEGMENT1_END, color);
+      startPosition = RANGE / 2; // set start point to right after the split
+      // fall through drawing the rest of the line segment
+    }
+    // regular segment line
+    int regularPosition = map(position,  RANGE/2, RANGE, SEGMENT3_START, NUM_LEDS);
+    int regularStartPosition = map(startPosition,  RANGE/2, RANGE, SEGMENT3_START, NUM_LEDS);
+    addLine(regularStartPosition, regularPosition, color);
+    // inner segment line
+    int innerPosition = map(position,  RANGE/2, RANGE, SEGMENT2_START, SEGMENT3_START);
+    int innerStartPosition = map(startPosition,  RANGE/2, RANGE, SEGMENT2_START, SEGMENT3_START);
+    addLine(innerStartPosition, innerPosition, CRGB(128,0,255));
+  }
+
+}
+
+void drawRemoteBeat(long beatTime, long dt, CRGB color) {
+  long timeFromStart = getNow() - beatTime;
+
+  int position = positionFromTime(timeFromStart);
+  if (position >= RANGE) {
+    return;
+  }
+
+  if (position < (RANGE / 2)) {
+    position = map(position, 0, RANGE/2, NUM_LEDS - 1, SEGMENT3_START - 1);
+    int startPosition = map(positionFromTime(timeFromStart - dt),  0, RANGE/2, NUM_LEDS - 1, SEGMENT3_START - 1);
+    if (startPosition > NUM_LEDS - 1) {
+      startPosition = NUM_LEDS - 1;
+    }
+
+    addLine(position, startPosition, color);
+  } else {
+    int startPosition = positionFromTime(timeFromStart - dt);
+    if (startPosition < (RANGE / 2)) {
+      // line straddles center, pre-center segment first
+      startPosition = map(startPosition,  0, RANGE/2, NUM_LEDS - 1, SEGMENT3_START - 1);
+      addLine(SEGMENT3_START, startPosition, color);
+      startPosition = RANGE / 2; // set start point to right after the split
+      // fall through drawing the rest of the line segment
+    }
+    // regular segment line
+    int regularPosition = map(position,  RANGE/2, RANGE, SEGMENT1_END, -1);
+    int regularStartPosition = map(startPosition,  RANGE/2, RANGE, SEGMENT1_END, -1);
+    addLine(regularPosition, regularStartPosition, color);
+    // inner segment line
+    int innerPosition = map(position,  RANGE/2, RANGE, SEGMENT3_START - 1, SEGMENT1_END);
+    int innerStartPosition = map(startPosition,  RANGE/2, RANGE, SEGMENT3_START - 1, SEGMENT1_END);
+    addLine(innerPosition, innerStartPosition, CRGB(128,255,0));
+  }
+
+}
+
+/*
+void drawRemoteBeat(long beatTime, long dt, CRGB color) {
+  long timeFromStart = getNow() - beatTime;
   if (timeFromStart >= BEAT_TRAVEL_TIME) {
     return;
   }
@@ -175,39 +274,44 @@ void drawRemoteBeat(long beatTime, long now, CRGB color) {
     return;
   }
 
-  leds[(NUM_LEDS - 1) - position] += color;
-}
+  int startPosition = (timeFromStart - dt) * NUM_LEDS / BEAT_TRAVEL_TIME;
+  if (startPosition < 0) {
+    startPosition = 0;
+  }
 
-void drawWorld(long now) {
-  leds.fadeToBlackBy(30);
+  for (CRGB & pixel : leds((NUM_LEDS - 1) - position, (NUM_LEDS - 1) - startPosition)) {
+    pixel += color;
+  }
+}*/
+
+void drawWorld() {
+  long now = getNow();
+  long dt = now - lastDrawTime;
+  leds.fadeToBlackBy(FADE_AMOUNT);
   for(int i = 0; i < NUM_SIMULTANEOUS_BEATS; i++) {
-    drawLocalBeat(localBeatTimes[i], now, LOCAL_BEAT_COLOR);
-    drawRemoteBeat(remoteBeatTimes[i], now, REMOTE_BEAT_COLOR);
+    drawLocalBeat(localBeatTimes[i], dt, LOCAL_BEAT_COLOR);
+    drawRemoteBeat(remoteBeatTimes[i], dt, REMOTE_BEAT_COLOR);
   }
 }
-
-long lastTime = 0;
-long lastDrawTime = 0;
 
 void loop() {
 
-  long now = millis();
-  int dt = now - lastTime;
+  updateNow();
 
-  if (remoteDrumBeat(now)) {
-    addRemoteBeat(now);
+  if (remoteDrumBeat()) {
+    addRemoteBeat();
   }
 
-  if (localDrumBeat(now)) {
-    addLocalBeat(now);
+  if (localDrumBeat()) {
+    addLocalBeat();
   }
 
-  updateWorld(now, dt);
+  updateWorld();
 
-  if (now - lastDrawTime > TIME_BETWEEN_FRAMES) {
-    drawWorld(now);
-    lastDrawTime = now;
-    
+  if (getNow() - lastDrawTime > TIME_BETWEEN_FRAMES) {
+    drawWorld();
+    lastDrawTime = getNow();
+
     FastLED.show();
   }
 }
